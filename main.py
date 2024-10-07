@@ -5,6 +5,7 @@ import argparse
 import requests
 from dotenv import load_dotenv
 from datetime import datetime
+import re
 
 # Create an argument parser
 parser = argparse.ArgumentParser(description='Run script with different env files')
@@ -75,7 +76,16 @@ try:
         exit(69)
 
     latest_cbz = max(cbz_files)
-    chapter_number = latest_cbz.split(" - ")[1].split(" ")[0].lstrip("c")
+
+    # commented as part of fix regex-fix-01
+    # chapter_number = latest_cbz.split(" - ")[1].split(" ")[0].lstrip("c")
+    match = re.search(r' - (\d+)', latest_cbz)
+    if not match:
+        logging.error(f"Failed to extract chapter number from {latest_cbz}, using 'Unknown'")
+        send_discord_message(f"Failed to extract chapter number from {latest_cbz}, using 'Unknown'")
+        chapter_number = "Unknown"
+    else:
+        chapter_number = match.group(1)
 
     # Renaming cbz to match the syntax "{MANGA_NAME} ch. {chapter_number}.cbz"
     old_file_path = os.path.join(DOWNLOAD_DIR, latest_cbz)
@@ -87,7 +97,9 @@ try:
 
     # Transfer the file to another PC using rsync
     try:
-        rsync_command = f"rsync -avz --progress \"{new_file_path}\" {REMOTE_USER}@{REMOTE_HOST}:{REMOTE_DIR}"
+        # commented as part of fix regex-fix-01
+        # rsync_command = f"rsync -avz --progress \"{new_file_path}\" {REMOTE_USER}@{REMOTE_HOST}:{REMOTE_DIR}"
+        rsync_command = f'rsync -avz --progress "{new_file_path}" "{REMOTE_USER}@{REMOTE_HOST}:{REMOTE_DIR}"'
         subprocess.run(rsync_command, shell=True, check=True)
 
         logging.info(f"File transfer complete! Transferred to: {REMOTE_USER}@{REMOTE_HOST}:{REMOTE_DIR}")
