@@ -79,13 +79,20 @@ try:
 
     # commented as part of fix regex-fix-01
     # chapter_number = latest_cbz.split(" - ")[1].split(" ")[0].lstrip("c")
-    match = re.search(r' - (\d+)', latest_cbz)
+    # Updated regex to handle both formats: "c" followed by digits and "ch." followed by a chapter number with potential suffixes
+    match = re.search(r'(c(\d+)|ch\.\s*(\d+[a-zA-Z]*))', latest_cbz)
     if not match:
         logging.error(f"Failed to extract chapter number from {latest_cbz}, using 'Unknown'")
         send_discord_message(f"Failed to extract chapter number from {latest_cbz}, using 'Unknown'")
         chapter_number = "Unknown"
     else:
-        chapter_number = match.group(1)
+        # Check which group matched
+        if match.group(2):  # If the match was for 'c' followed by digits
+            chapter_number = match.group(2)
+        else:  # If the match was for 'ch.' followed by a number (possibly with a suffix)
+            chapter_number = match.group(3)
+
+    # Continue with the renaming logic
 
     # Renaming cbz to match the syntax "{MANGA_NAME} ch. {chapter_number}.cbz"
     old_file_path = os.path.join(DOWNLOAD_DIR, latest_cbz)
