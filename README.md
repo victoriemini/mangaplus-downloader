@@ -1,11 +1,14 @@
 # mangaplus-downloader
-Python script to download the latest chapter of a specified manga from Manga Plus. Automation is done by setting script on a cron job.
-What the script does:
-1. Download the latest chapter of a manga on Manga Plus
-2. Rename the file to match normal convention
-3. Rsync the file to remote server where all other manga is stored
-4. Delete file from host machine
-5. Sends a message on Discord via webhook when the transfer is done, or if an error was encountered
+This Python application automatically downloads the latest chapters from Manga Plus, organizes them with proper naming conventions, and seamlessly transfers them to your media server. Perfect for manga enthusiasts who want to maintain their digital collection without manual intervention.
+What It Does
+The application handles the entire manga management workflow:
+
+- Smart Downloads: Automatically fetches the latest chapter of specified manga series from Manga Plus  
+- Intelligent Naming: Renames files to follow consistent conventions (e.g., "Dandadan ch. 150.cbz")  
+- Server Integration: Uses rsync to transfer files to your remote media server  
+- Clean Operations: Removes local files after successful transfer to save space  
+- Real-time Notifications: Sends Discord webhook notifications for successful downloads or error alerts  
+- Comprehensive Logging: Maintains detailed logs for troubleshooting and monitoring  
 
 ## Virtual environment creation (if you don't already know) 
 1. Install python3-full
