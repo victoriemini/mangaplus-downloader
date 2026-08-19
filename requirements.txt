@@ -1,2 +1,2 @@
-mloader
+mloader-ng==2.1.2
 python-dotenv
