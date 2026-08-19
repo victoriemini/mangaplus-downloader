@@ -12,7 +12,7 @@ from dotenv import load_dotenv
 
 
 parser = argparse.ArgumentParser(
-    description="Download latest Manga Plus chapters"
+    description="Download available Manga Plus chapters"
 )
 
 parser.add_argument(
@@ -41,12 +41,15 @@ os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 os.makedirs(MANGA_LIBRARY, exist_ok=True)
 os.makedirs(LOG_DIR, exist_ok=True)
 
+
 try:
     with open(args.manga_list, "r", encoding="utf-8") as file:
         manga_list = json.load(file)
+
 except FileNotFoundError:
     print(f"Manga list not found: {args.manga_list}")
     sys.exit(1)
+
 except json.JSONDecodeError as error:
     print(f"Invalid manga JSON: {error}")
     sys.exit(1)
@@ -72,6 +75,9 @@ logging.basicConfig(
 def find_cbz_files(directory):
     files = []
 
+    if not os.path.exists(directory):
+        return files
+
     for root, _, filenames in os.walk(directory):
         for filename in filenames:
             if filename.lower().endswith(".cbz"):
@@ -86,7 +92,7 @@ def extract_chapter_number(filename):
     patterns = [
         r"ch\.\s*(\d+(?:\.\d+)?[a-zA-Z]*)",
         r"\bc(\d+(?:\.\d+)?[a-zA-Z]*)",
-        r"chapter[\s_-]*(\d+(?:\.\d+)?[a-zA-Z]*)",
+        r"chapter[\s_-]*(?:#\s*)?(\d+(?:\.\d+)?[a-zA-Z]*)",
     ]
 
     for pattern in patterns:
@@ -103,6 +109,9 @@ def extract_chapter_number(filename):
 
 
 def cleanup_empty_directories(directory):
+    if not os.path.exists(directory):
+        return
+
     for root, dirs, files in os.walk(
         directory,
         topdown=False,
@@ -123,66 +132,59 @@ def download_manga(manga_name, manga_id):
         f"(Manga Plus title ID: {manga_id})"
     )
 
-    cbz_before = set(
-        find_cbz_files(DOWNLOAD_DIR)
+    # Keep each MangaPlus Title ID isolated.
+    #
+    # This prevents different language editions or titles
+    # with identical official names from sharing the same
+    # mloader manifest.
+    manga_work_dir = os.path.join(
+        DOWNLOAD_DIR,
+        str(manga_id),
     )
 
+    os.makedirs(
+        manga_work_dir,
+        exist_ok=True,
+    )
+
+    cbz_before = set(
+        find_cbz_files(manga_work_dir)
+    )
+
+    # No "-l" here.
+    #
+    # mloader will inspect all currently available chapters
+    # for this title. Its resume manifest prevents already
+    # completed chapters from being downloaded again.
     command = [
         "mloader",
         "-t",
         str(manga_id),
-        "-l",
         "-o",
-        DOWNLOAD_DIR,
+        manga_work_dir,
     ]
 
-    try:
-        process = subprocess.run(
-            command,
-            check=True,
-            capture_output=True,
-            text=True,
+    process = subprocess.run(
+        command,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    # Reprint mloader output so it remains visible
+    # in Docker / API / n8n logs.
+    if process.stdout:
+        print(
+            process.stdout,
+            end="",
         )
 
-        # Reprint mloader output so it still appears
-        # in Docker and n8n execution logs.
-        if process.stdout:
-            print(
-                process.stdout,
-                end="",
-            )
-
-        if process.stderr:
-            print(
-                process.stderr,
-                end="",
-                file=sys.stderr,
-            )
-
-    except subprocess.CalledProcessError as error:
-        if error.stdout:
-            print(
-                error.stdout,
-                end="",
-            )
-
-        if error.stderr:
-            print(
-                error.stderr,
-                end="",
-                file=sys.stderr,
-            )
-
-        logging.error(
-            f"mloader failed for {manga_name}: "
-            f"{error}"
+    if process.stderr:
+        print(
+            process.stderr,
+            end="",
+            file=sys.stderr,
         )
-
-        return {
-            "name": manga_name,
-            "status": "failed",
-            "error": str(error),
-        }
 
     output = (
         (process.stdout or "")
@@ -207,88 +209,22 @@ def download_manga(manga_name, manga_id):
         mloader_downloaded = int(
             summary_match.group(1)
         )
+
         mloader_skipped = int(
             summary_match.group(2)
         )
+
         mloader_failed = int(
             summary_match.group(3)
         )
 
-    if mloader_failed > 0:
-        logging.error(
-            f"mloader reported {mloader_failed} "
-            f"failed chapter(s) for {manga_name}"
-        )
-
-        return {
-            "name": manga_name,
-            "status": "failed",
-            "error": (
-                f"{mloader_failed} chapter(s) failed"
-            ),
-        }
-
     cbz_after = set(
-        find_cbz_files(DOWNLOAD_DIR)
+        find_cbz_files(manga_work_dir)
     )
 
     new_cbz_files = list(
         cbz_after - cbz_before
     )
-
-    # Nothing new was created, but mloader says
-    # chapters were already completed in its manifest.
-    if not new_cbz_files and mloader_skipped > 0:
-        logging.info(
-            f"{manga_name} is already up to date "
-            f"({mloader_skipped} chapter(s) "
-            f"skipped by manifest)"
-        )
-
-        return {
-            "name": manga_name,
-            "status": "up_to_date",
-            "skipped_manifest": mloader_skipped,
-        }
-
-    if not new_cbz_files:
-        logging.warning(
-            f"No new CBZ detected for {manga_name}"
-        )
-
-        return {
-            "name": manga_name,
-            "status": "no_file",
-        }
-
-    # Normally -l downloads only one chapter.
-    # If more than one candidate appears,
-    # use the newest one.
-    downloaded_file = max(
-        new_cbz_files,
-        key=os.path.getmtime,
-    )
-
-    original_filename = os.path.basename(
-        downloaded_file
-    )
-
-    chapter_number = extract_chapter_number(
-        original_filename
-    )
-
-    if chapter_number:
-        final_filename = (
-            f"{manga_name} ch. "
-            f"{chapter_number}.cbz"
-        )
-    else:
-        logging.warning(
-            "Could not determine chapter number "
-            f"from {original_filename}"
-        )
-
-        final_filename = original_filename
 
     manga_directory = os.path.join(
         MANGA_LIBRARY,
@@ -300,48 +236,208 @@ def download_manga(manga_name, manga_id):
         exist_ok=True,
     )
 
-    destination = os.path.join(
-        manga_directory,
-        final_filename,
+    downloaded_chapters = []
+    downloaded_files = []
+
+    skipped_chapters = []
+    skipped_files = []
+
+    # Process EVERY new CBZ instead of only the newest one.
+    new_cbz_files.sort(
+        key=os.path.getmtime
     )
 
-    if os.path.exists(destination):
-        logging.info(
-            f"Already exists in library: "
-            f"{destination}"
+    for downloaded_file in new_cbz_files:
+        original_filename = os.path.basename(
+            downloaded_file
         )
 
-        os.remove(downloaded_file)
+        chapter_number = extract_chapter_number(
+            original_filename
+        )
 
-        cleanup_empty_directories(
-            DOWNLOAD_DIR
+        if chapter_number:
+            final_filename = (
+                f"{manga_name} ch. "
+                f"{chapter_number}.cbz"
+            )
+        else:
+            logging.warning(
+                "Could not determine chapter number "
+                f"from {original_filename}"
+            )
+
+            final_filename = original_filename
+
+        destination = os.path.join(
+            manga_directory,
+            final_filename,
+        )
+
+        if os.path.exists(destination):
+            logging.info(
+                f"Already exists in library: "
+                f"{destination}"
+            )
+
+            os.remove(downloaded_file)
+
+            skipped_files.append(
+                final_filename
+            )
+
+            if chapter_number:
+                skipped_chapters.append(
+                    chapter_number
+                )
+
+            continue
+
+        shutil.move(
+            downloaded_file,
+            destination,
+        )
+
+        logging.info(
+            f"Saved: {destination}"
+        )
+
+        downloaded_files.append(
+            final_filename
+        )
+
+        if chapter_number:
+            downloaded_chapters.append(
+                chapter_number
+            )
+
+    cleanup_empty_directories(
+        manga_work_dir
+    )
+
+    downloaded_count = len(
+        downloaded_files
+    )
+
+    skipped_existing_count = len(
+        skipped_files
+    )
+
+    # mloader can occasionally complete some chapters
+    # while reporting failures for others.
+    if (
+        process.returncode != 0
+        or mloader_failed > 0
+    ):
+        if (
+            downloaded_count > 0
+            or skipped_existing_count > 0
+        ):
+            logging.warning(
+                f"{manga_name} completed partially: "
+                f"{downloaded_count} new, "
+                f"{mloader_failed} failed"
+            )
+
+            return {
+                "name": manga_name,
+                "id": str(manga_id),
+                "status": "partial",
+                "downloaded_count": downloaded_count,
+                "chapters": downloaded_chapters,
+                "files": downloaded_files,
+                "skipped_existing": skipped_existing_count,
+                "skipped_manifest": mloader_skipped,
+                "failed_chapters": mloader_failed,
+                "exit_code": process.returncode,
+            }
+
+        logging.error(
+            f"mloader failed for {manga_name}"
         )
 
         return {
             "name": manga_name,
-            "chapter": chapter_number,
-            "file": final_filename,
-            "status": "skipped",
+            "id": str(manga_id),
+            "status": "failed",
+            "downloaded_count": 0,
+            "skipped_manifest": mloader_skipped,
+            "failed_chapters": (
+                mloader_failed
+                if mloader_failed > 0
+                else 1
+            ),
+            "exit_code": process.returncode,
         }
 
-    shutil.move(
-        downloaded_file,
-        destination,
-    )
+    # At least one new chapter was successfully moved
+    # into the final manga library.
+    if downloaded_count > 0:
+        logging.info(
+            f"{manga_name}: "
+            f"{downloaded_count} new chapter(s) saved"
+        )
 
-    cleanup_empty_directories(
-        DOWNLOAD_DIR
-    )
+        return {
+            "name": manga_name,
+            "id": str(manga_id),
+            "status": "downloaded",
+            "downloaded_count": downloaded_count,
+            "chapters": downloaded_chapters,
+            "files": downloaded_files,
+            "skipped_existing": skipped_existing_count,
+            "skipped_manifest": mloader_skipped,
+        }
 
-    logging.info(
-        f"Saved: {destination}"
+    # Files were generated, but they already existed
+    # in the final library.
+    if skipped_existing_count > 0:
+        logging.info(
+            f"{manga_name}: "
+            f"{skipped_existing_count} chapter(s) "
+            f"already existed in library"
+        )
+
+        return {
+            "name": manga_name,
+            "id": str(manga_id),
+            "status": "skipped",
+            "downloaded_count": 0,
+            "skipped_existing": skipped_existing_count,
+            "chapters": skipped_chapters,
+            "files": skipped_files,
+            "skipped_manifest": mloader_skipped,
+        }
+
+    # Nothing new was generated because every currently
+    # available chapter is already in the manifest.
+    if mloader_skipped > 0:
+        logging.info(
+            f"{manga_name} is already up to date "
+            f"({mloader_skipped} chapter(s) "
+            f"skipped by manifest)"
+        )
+
+        return {
+            "name": manga_name,
+            "id": str(manga_id),
+            "status": "up_to_date",
+            "downloaded_count": 0,
+            "skipped_manifest": mloader_skipped,
+        }
+
+    # mloader completed successfully but did not produce
+    # or skip any chapter.
+    logging.warning(
+        f"No available CBZ detected for {manga_name}"
     )
 
     return {
         "name": manga_name,
-        "chapter": chapter_number,
-        "file": final_filename,
-        "status": "downloaded",
+        "id": str(manga_id),
+        "status": "no_file",
+        "downloaded_count": 0,
+        "mloader_downloaded": mloader_downloaded,
     }
 
 
@@ -360,6 +456,7 @@ def main():
                         or "Unknown"
                     ),
                     "status": "failed",
+                    "downloaded_count": 0,
                     "error": "Missing name or id",
                 }
             )
@@ -373,36 +470,74 @@ def main():
 
         results.append(result)
 
+    # "downloaded" is now the number of NEW CHAPTERS,
+    # rather than the number of manga series.
+    #
+    # Your n8n condition:
+    #
+    # result.downloaded > 0
+    #
+    # continues to work exactly as before.
+    downloaded_total = sum(
+        result.get(
+            "downloaded_count",
+            0,
+        )
+        for result in results
+    )
+
+    up_to_date_total = sum(
+        1
+        for result in results
+        if result["status"] == "up_to_date"
+    )
+
+    skipped_total = sum(
+        result.get(
+            "skipped_existing",
+            0,
+        )
+        for result in results
+    )
+
+    no_file_total = sum(
+        1
+        for result in results
+        if result["status"] == "no_file"
+    )
+
+    partial_total = sum(
+        1
+        for result in results
+        if result["status"] == "partial"
+    )
+
+    failed_total = sum(
+        1
+        for result in results
+        if result["status"] == "failed"
+    )
+
+    failed_chapters_total = sum(
+        result.get(
+            "failed_chapters",
+            0,
+        )
+        for result in results
+    )
+
     summary = {
-        "downloaded": sum(
-            1
-            for result in results
-            if result["status"] == "downloaded"
-        ),
-        "up_to_date": sum(
-            1
-            for result in results
-            if result["status"] == "up_to_date"
-        ),
-        "skipped": sum(
-            1
-            for result in results
-            if result["status"] == "skipped"
-        ),
-        "no_file": sum(
-            1
-            for result in results
-            if result["status"] == "no_file"
-        ),
-        "failed": sum(
-            1
-            for result in results
-            if result["status"] == "failed"
-        ),
+        "downloaded": downloaded_total,
+        "up_to_date": up_to_date_total,
+        "skipped": skipped_total,
+        "no_file": no_file_total,
+        "partial": partial_total,
+        "failed": failed_total,
+        "failed_chapters": failed_chapters_total,
         "results": results,
     }
 
-    # Structured output for n8n.
+    # Structured output consumed by api.py / n8n.
     print(
         "MANGAPLUS_RESULT="
         + json.dumps(
@@ -411,7 +546,10 @@ def main():
         )
     )
 
-    if summary["failed"] > 0:
+    if (
+        summary["failed"] > 0
+        or summary["partial"] > 0
+    ):
         sys.exit(1)
 
 
