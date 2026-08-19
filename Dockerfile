@@ -6,6 +6,7 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY main.py .
+COPY api.py .
 
 RUN mkdir -p /downloads /manga /config /logs
 
