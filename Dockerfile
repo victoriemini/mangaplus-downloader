@@ -9,4 +9,4 @@ COPY main.py .
 
 RUN mkdir -p /downloads /manga /config /logs
 
-CMD ["sleep", "infinity"]
+CMD ["python", "/app/api.py"]
